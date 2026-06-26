@@ -108,6 +108,9 @@ class AbstractAccount(ABC):
         except (InvalidOperation, ValueError):
             raise InvalidOperationError("Amount must be a valid number.")
 
+        if not normalized_amount.is_finite():
+            raise InvalidOperationError("Amount must be a finite number.")
+
         if normalized_amount < 0:
             raise InvalidOperationError("Amount cannot be negative.")
 
@@ -262,4 +265,258 @@ class BankAccount(AbstractAccount):
             f"Account: ****{last_digits} | "
             f"Status: {self.status.value} | "
             f"Balance: {self._balance} {self.currency.value}"
+        )
+
+
+class SavingsAccount(BankAccount):
+    """Savings account with minimum balance and monthly interest."""
+
+    def __init__(
+        self,
+        owner: str,
+        balance: Decimal | int | float | str = Decimal("0"),
+        account_id: str | None = None,
+        status: AccountStatus | str = AccountStatus.ACTIVE,
+        currency: Currency | str = Currency.RUB,
+        min_balance: Decimal | int | float | str = Decimal("0"),
+        monthly_interest_rate: Decimal | int | float | str = Decimal("0.01"),
+    ) -> None:
+        super().__init__(
+            owner=owner,
+            balance=balance,
+            account_id=account_id,
+            status=status,
+            currency=currency,
+        )
+        self.min_balance = self._validate_amount(min_balance)
+        self.monthly_interest_rate = self._validate_amount(monthly_interest_rate)
+
+        if self._balance < self.min_balance:
+            raise InvalidOperationError("Balance cannot be lower than minimum balance.")
+
+    def apply_monthly_interest(self) -> Decimal:
+        """Apply monthly interest and return the credited amount."""
+        self._ensure_account_is_available()
+
+        interest_amount = self._balance * self.monthly_interest_rate
+
+        if interest_amount == 0:
+            return Decimal("0")
+
+        self._balance += interest_amount
+        return interest_amount
+
+    def withdraw(self, amount: Decimal | int | float | str) -> None:
+        """Withdraw money while preserving the minimum balance."""
+        self._ensure_account_is_available()
+
+        normalized_amount = self._validate_amount(amount)
+
+        if normalized_amount == 0:
+            raise InvalidOperationError("Withdraw amount must be greater than zero.")
+
+        if self._balance - normalized_amount < self.min_balance:
+            raise InsufficientFundsError("Withdrawal would break minimum balance.")
+
+        self._balance -= normalized_amount
+
+    def get_account_info(self) -> dict:
+        """Return savings account information."""
+        account_info = super().get_account_info()
+        account_info.update(
+            {
+                "min_balance": str(self.min_balance),
+                "monthly_interest_rate": str(self.monthly_interest_rate),
+            }
+        )
+        return account_info
+
+    def __str__(self) -> str:
+        """Return human-readable savings account representation."""
+        return (
+            f"{super().__str__()} | "
+            f"Min balance: {self.min_balance} {self.currency.value} | "
+            f"Monthly interest: {self.monthly_interest_rate}"
+        )
+
+
+class PremiumAccount(BankAccount):
+    """Premium account with overdraft, higher withdrawal limit, and commission."""
+
+    def __init__(
+        self,
+        owner: str,
+        balance: Decimal | int | float | str = Decimal("0"),
+        account_id: str | None = None,
+        status: AccountStatus | str = AccountStatus.ACTIVE,
+        currency: Currency | str = Currency.RUB,
+        overdraft_limit: Decimal | int | float | str = Decimal("10000"),
+        withdrawal_limit: Decimal | int | float | str = Decimal("100000"),
+        fixed_commission: Decimal | int | float | str = Decimal("50"),
+    ) -> None:
+        super().__init__(
+            owner=owner,
+            balance=balance,
+            account_id=account_id,
+            status=status,
+            currency=currency,
+        )
+        self.overdraft_limit = self._validate_amount(overdraft_limit)
+        self.withdrawal_limit = self._validate_amount(withdrawal_limit)
+        self.fixed_commission = self._validate_amount(fixed_commission)
+
+    def withdraw(self, amount: Decimal | int | float | str) -> None:
+        """Withdraw money using premium limits and overdraft when needed."""
+        self._ensure_account_is_available()
+
+        normalized_amount = self._validate_amount(amount)
+
+        if normalized_amount == 0:
+            raise InvalidOperationError("Withdraw amount must be greater than zero.")
+
+        if normalized_amount > self.withdrawal_limit:
+            raise InvalidOperationError("Withdraw amount exceeds premium limit.")
+
+        total_charge = normalized_amount + self.fixed_commission
+
+        if total_charge > self._balance + self.overdraft_limit:
+            raise InsufficientFundsError("Not enough funds including overdraft limit.")
+
+        self._balance -= total_charge
+
+    def get_account_info(self) -> dict:
+        """Return premium account information."""
+        account_info = super().get_account_info()
+        account_info.update(
+            {
+                "overdraft_limit": str(self.overdraft_limit),
+                "withdrawal_limit": str(self.withdrawal_limit),
+                "fixed_commission": str(self.fixed_commission),
+            }
+        )
+        return account_info
+
+    def __str__(self) -> str:
+        """Return human-readable premium account representation."""
+        return (
+            f"{super().__str__()} | "
+            f"Overdraft: {self.overdraft_limit} {self.currency.value} | "
+            f"Withdraw limit: {self.withdrawal_limit} {self.currency.value} | "
+            f"Commission: {self.fixed_commission} {self.currency.value}"
+        )
+
+
+class InvestmentAccount(BankAccount):
+    """Investment account with virtual assets and yearly growth projection."""
+
+    ALLOWED_ASSETS = ("stocks", "bonds", "etf")
+    DEFAULT_YEARLY_GROWTH_RATES = {
+        "stocks": Decimal("0.08"),
+        "bonds": Decimal("0.04"),
+        "etf": Decimal("0.06"),
+    }
+
+    def __init__(
+        self,
+        owner: str,
+        balance: Decimal | int | float | str = Decimal("0"),
+        account_id: str | None = None,
+        status: AccountStatus | str = AccountStatus.ACTIVE,
+        currency: Currency | str = Currency.RUB,
+        portfolio: dict[str, Decimal | int | float | str] | None = None,
+    ) -> None:
+        super().__init__(
+            owner=owner,
+            balance=balance,
+            account_id=account_id,
+            status=status,
+            currency=currency,
+        )
+        self.portfolio = self._validate_portfolio(portfolio or {})
+
+    def _validate_portfolio(
+        self,
+        portfolio: dict[str, Decimal | int | float | str],
+    ) -> dict[str, Decimal]:
+        """Validate investment portfolio asset values."""
+        invalid_assets = set(portfolio) - set(self.ALLOWED_ASSETS)
+
+        if invalid_assets:
+            valid_assets = ", ".join(self.ALLOWED_ASSETS)
+            raise InvalidOperationError(
+                f"Invalid portfolio assets: {', '.join(invalid_assets)}. "
+                f"Available assets: {valid_assets}."
+            )
+
+        return {
+            asset: self._validate_amount(portfolio.get(asset, Decimal("0")))
+            for asset in self.ALLOWED_ASSETS
+        }
+
+    @property
+    def portfolio_value(self) -> Decimal:
+        """Return total current value of virtual assets."""
+        return sum(self.portfolio.values(), Decimal("0"))
+
+    def withdraw(self, amount: Decimal | int | float | str) -> None:
+        """Withdraw only free cash, leaving virtual assets untouched."""
+        self._ensure_account_is_available()
+
+        normalized_amount = self._validate_amount(amount)
+
+        if normalized_amount == 0:
+            raise InvalidOperationError("Withdraw amount must be greater than zero.")
+
+        if normalized_amount > self._balance:
+            raise InsufficientFundsError("Investment assets cannot be withdrawn as cash.")
+
+        self._balance -= normalized_amount
+
+    def project_yearly_growth(
+        self,
+        yearly_growth_rates: dict[str, Decimal | int | float | str] | None = None,
+    ) -> dict:
+        """Project portfolio value after one year using asset growth rates."""
+        rates = yearly_growth_rates or self.DEFAULT_YEARLY_GROWTH_RATES
+        normalized_rates = {
+            asset: self._validate_amount(rates.get(asset, Decimal("0")))
+            for asset in self.ALLOWED_ASSETS
+        }
+        projected_assets = {
+            asset: value * (Decimal("1") + normalized_rates[asset])
+            for asset, value in self.portfolio.items()
+        }
+        projected_portfolio_value = sum(projected_assets.values(), Decimal("0"))
+
+        return {
+            "current_portfolio_value": str(self.portfolio_value),
+            "projected_portfolio_value": str(projected_portfolio_value),
+            "projected_total_value": str(self._balance + projected_portfolio_value),
+            "projected_assets": {
+                asset: str(value)
+                for asset, value in projected_assets.items()
+            },
+        }
+
+    def get_account_info(self) -> dict:
+        """Return investment account information."""
+        account_info = super().get_account_info()
+        account_info.update(
+            {
+                "portfolio": {
+                    asset: str(value)
+                    for asset, value in self.portfolio.items()
+                },
+                "portfolio_value": str(self.portfolio_value),
+                "total_value": str(self._balance + self.portfolio_value),
+            }
+        )
+        return account_info
+
+    def __str__(self) -> str:
+        """Return human-readable investment account representation."""
+        return (
+            f"{super().__str__()} | "
+            f"Portfolio value: {self.portfolio_value} {self.currency.value} | "
+            f"Total value: {self._balance + self.portfolio_value} {self.currency.value}"
         )
