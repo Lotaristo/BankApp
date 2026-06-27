@@ -12,6 +12,7 @@ The codebase currently contains:
 - account lifecycle statuses;
 - supported currencies;
 - advanced account types for savings, premium, and investment scenarios;
+- a central `Bank` class for clients, accounts, and security policies;
 - demonstration scenarios in `src/main.py`.
 
 ## Project Structure
@@ -84,6 +85,44 @@ An investment account that extends `BankAccount` with:
 
 The Day 2 demo creates each advanced account type, runs valid operations, and shows expected errors for minimum balance, premium limits, overdraft limits, and investment cash restrictions.
 
+
+## Day 3: Bank Management System
+
+Added a central bank layer in `src/models.py`:
+
+### Client
+
+A client model with:
+
+- full name, generated or custom client ID, and lifecycle status;
+- contacts dictionary for phone, email, or other contact channels;
+- linked account number list through `account_ids`;
+- age validation that rejects clients under 18;
+- failed login counter and suspicious action history;
+- serializable `get_client_info()` output.
+
+### Bank
+
+A bank management class with:
+
+- `add_client()` to register clients;
+- `open_account()` to create base, savings, premium, or investment accounts for clients;
+- `close_account()`, `freeze_account()`, and `unfreeze_account()` for account lifecycle management;
+- `authenticate_client()` with three failed login attempts leading to client blocking;
+- `search_accounts()` by owner, status, currency, or account type;
+- `get_total_balance()` grouped by currency;
+- `get_clients_ranking()` ordered by total client account value.
+
+### Security Policies
+
+The bank layer now supports:
+
+- blocking clients after three failed authentication attempts;
+- recording structured security events;
+- marking clients as suspicious after suspicious account actions;
+- blocking sensitive bank operations from 00:00 to 05:00.
+
+The Day 3 demo creates several clients, opens different account types, authenticates clients, blocks a client after failed logins, freezes and unfreezes an account, searches accounts, calculates balances, ranks clients, and demonstrates the night restriction.
 ## How to Run
 
 ```bash
