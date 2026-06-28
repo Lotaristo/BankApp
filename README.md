@@ -13,6 +13,7 @@ The codebase currently contains:
 - supported currencies;
 - advanced account types for savings, premium, and investment scenarios;
 - a central `Bank` class for clients, accounts, and security policies;
+- a transaction model, priority queue, and transaction processor;
 - demonstration scenarios in `src/main.py`.
 
 ## Project Structure
@@ -123,6 +124,53 @@ The bank layer now supports:
 - blocking sensitive bank operations from 00:00 to 05:00.
 
 The Day 3 demo creates several clients, opens different account types, authenticates clients, blocks a client after failed logins, freezes and unfreezes an account, searches accounts, calculates balances, ranks clients, and demonstrates the night restriction.
+
+## Day 4: Transaction System
+
+Added an extended transaction layer in `src/models.py`:
+
+### Transaction
+
+A transaction model with:
+
+- generated or custom transaction ID;
+- operation type: `deposit`, `withdraw`, `transfer`;
+- amount, currency, and commission;
+- sender and recipient account IDs;
+- lifecycle status and failure reason;
+- timestamps for creation, updates, scheduling, and processing;
+- retry metadata for processor-level retry attempts.
+
+### TransactionQueue
+
+A queue module with:
+
+- adding pending transactions;
+- priority-based processing order;
+- delayed operations through `scheduled_at`;
+- transaction cancellation before processing;
+- queue snapshots and pending counters.
+
+### TransactionProcessor
+
+A processing module with:
+
+- fee calculation, including external transfer fees;
+- currency conversion through configurable exchange rates;
+- retry attempts for failed transactions;
+- structured error logging;
+- support for deposits, withdrawals, and transfers.
+
+### Transaction Rules
+
+The processor enforces:
+
+- no transfers from negative balances except for premium accounts;
+- no operations on frozen or closed accounts through existing account status checks;
+- external transfer commission;
+- failed transaction status and refusal reason recording.
+
+The Day 4 demo creates 10 transactions, queues them, cancels one, leaves one delayed, processes ready transactions, and prints final statuses, errors, and balances.
 ## How to Run
 
 ```bash

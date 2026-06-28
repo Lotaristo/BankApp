@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time, timedelta
 
 from models import (
     AccountFrozenError,
@@ -14,6 +14,10 @@ from models import (
     PremiumAccount,
     SavingsAccount,
     SecurityRestrictionError,
+    Transaction,
+    TransactionProcessor,
+    TransactionQueue,
+    TransactionStatus,
 )
 
 def show_account(account: BankAccount) -> None:
@@ -243,11 +247,184 @@ def run_day_3_demo() -> None:
         print(night_bank.get_bank_info())
         print("-" * 80)
 
+
+
+def run_day_4_demo() -> None:
+    """Run a demo for Day 4 transaction queue and processor requirements."""
+    bank = Bank("Transaction Bank", now_provider=lambda: time(11, 0))
+    queue = TransactionQueue()
+    processor = TransactionProcessor(bank)
+
+    first_client = Client("Transaction Sender", age=35, password="sender-pass")
+    second_client = Client("Transaction Receiver", age=28, password="receiver-pass")
+    third_client = Client("Frozen Client", age=45, password="frozen-pass")
+
+    bank.add_client(first_client)
+    bank.add_client(second_client)
+    bank.add_client(third_client)
+
+    sender_account = bank.open_account(
+        first_client.client_id,
+        account_type="base",
+        balance=50_000,
+        currency=Currency.RUB,
+    )
+    receiver_account = bank.open_account(
+        second_client.client_id,
+        account_type="base",
+        balance=10_000,
+        currency=Currency.RUB,
+    )
+    usd_account = bank.open_account(
+        second_client.client_id,
+        account_type="base",
+        balance=500,
+        currency=Currency.USD,
+    )
+    premium_account = bank.open_account(
+        first_client.client_id,
+        account_type="premium",
+        balance=100,
+        currency=Currency.RUB,
+        overdraft_limit=1_000,
+        withdrawal_limit=10_000,
+        fixed_commission=0,
+    )
+    frozen_account = bank.open_account(
+        third_client.client_id,
+        account_type="base",
+        balance=5_000,
+        currency=Currency.RUB,
+    )
+    bank.freeze_account(frozen_account.account_id, reason="Day 4 frozen account test")
+
+    transactions = [
+        Transaction(
+            "deposit",
+            1_000,
+            Currency.RUB,
+            recipient_account_id=receiver_account.account_id,
+            priority=3,
+        ),
+        Transaction(
+            "withdraw",
+            2_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            priority=2,
+        ),
+        Transaction(
+            "transfer",
+            3_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            recipient_account_id=receiver_account.account_id,
+            priority=4,
+        ),
+        Transaction(
+            "transfer",
+            100,
+            Currency.USD,
+            sender_account_id=usd_account.account_id,
+            recipient_account_id=receiver_account.account_id,
+            is_external=True,
+            max_retries=1,
+            priority=5,
+        ),
+        Transaction(
+            "transfer",
+            500,
+            Currency.RUB,
+            sender_account_id=frozen_account.account_id,
+            recipient_account_id=receiver_account.account_id,
+            max_retries=1,
+            priority=6,
+        ),
+        Transaction(
+            "withdraw",
+            200_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            max_retries=1,
+            priority=1,
+        ),
+        Transaction(
+            "deposit",
+            300,
+            Currency.RUB,
+            recipient_account_id=sender_account.account_id,
+            scheduled_at=datetime.now() + timedelta(days=1),
+            priority=10,
+        ),
+        Transaction(
+            "deposit",
+            700,
+            Currency.RUB,
+            recipient_account_id=sender_account.account_id,
+            priority=7,
+        ),
+        Transaction(
+            "withdraw",
+            120,
+            Currency.RUB,
+            sender_account_id=premium_account.account_id,
+            priority=9,
+        ),
+        Transaction(
+            "transfer",
+            10,
+            Currency.RUB,
+            sender_account_id=premium_account.account_id,
+            recipient_account_id=receiver_account.account_id,
+            priority=8,
+        ),
+    ]
+
+    for transaction in transactions:
+        queue.add(transaction)
+
+    queue.cancel(transactions[7].transaction_id, reason="Demo cancellation before processing.")
+    processed_transactions = processor.process_queue(queue)
+
+    print("Day 4. Transactions:")
+    print(f"Created transactions: {len(transactions)}")
+    print(f"Processed ready transactions: {len(processed_transactions)}")
+    print(f"Pending delayed transactions: {queue.pending_count()}")
+
+    for transaction in transactions:
+        print(transaction.to_dict())
+
+    print("Transaction errors:")
+    print(processor.error_log)
+    print("Final balances:")
+    show_account(sender_account)
+    show_account(receiver_account)
+    show_account(usd_account)
+    show_account(premium_account)
+    show_account(frozen_account)
+    print("Completed:", len([
+        transaction
+        for transaction in transactions
+        if transaction.status == TransactionStatus.COMPLETED
+    ]))
+    print("Failed:", len([
+        transaction
+        for transaction in transactions
+        if transaction.status == TransactionStatus.FAILED
+    ]))
+    print("Canceled:", len([
+        transaction
+        for transaction in transactions
+        if transaction.status == TransactionStatus.CANCELED
+    ]))
+    print("-" * 80)
+
 def main() -> None:
     """Run demonstration scenarios for implemented project days."""
     run_day_1_demo()
     run_day_2_demo()
     run_day_3_demo()
+    run_day_4_demo()
 
 
 if __name__ == "__main__":

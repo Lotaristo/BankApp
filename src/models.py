@@ -54,6 +54,25 @@ class ClientStatus(str, Enum):
     SUSPICIOUS = "suspicious"
 
 
+
+
+class TransactionType(str, Enum):
+    """Supported transaction operation types."""
+
+    DEPOSIT = "deposit"
+    WITHDRAW = "withdraw"
+    TRANSFER = "transfer"
+
+
+class TransactionStatus(str, Enum):
+    """Transaction lifecycle status."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
 class Currency(str, Enum):
     """
     Supported account currencies.
@@ -543,6 +562,240 @@ class InvestmentAccount(BankAccount):
         )
 
 
+
+class Transaction:
+    """Money operation request with processing metadata."""
+
+    def __init__(
+        self,
+        transaction_type: TransactionType | str,
+        amount: Decimal | int | float | str,
+        currency: Currency | str,
+        sender_account_id: str | None = None,
+        recipient_account_id: str | None = None,
+        commission: Decimal | int | float | str = Decimal("0"),
+        transaction_id: str | None = None,
+        status: TransactionStatus | str = TransactionStatus.PENDING,
+        failure_reason: str | None = None,
+        priority: int = 0,
+        scheduled_at: datetime | None = None,
+        is_external: bool = False,
+        max_retries: int = 0,
+    ) -> None:
+        self.transaction_id = transaction_id or uuid4().hex[:14]
+        self.transaction_type = self._validate_transaction_type(transaction_type)
+        self.amount = AbstractAccount._validate_amount(amount)
+        self.currency = BankAccount._validate_currency(currency)
+        self.commission = AbstractAccount._validate_amount(commission)
+        self.sender_account_id = sender_account_id
+        self.recipient_account_id = recipient_account_id
+        self.status = self._validate_status(status)
+        self.failure_reason = failure_reason
+        self.priority = self._validate_priority(priority)
+        self.scheduled_at = self._validate_scheduled_at(scheduled_at or datetime.now())
+        self.is_external = bool(is_external)
+        self.max_retries = self._validate_retry_count(max_retries)
+        self.retry_count = 0
+        self.created_at = datetime.now()
+        self.updated_at = self.created_at
+        self.processed_at: datetime | None = None
+
+        if self.amount == 0:
+            raise InvalidOperationError("Transaction amount must be greater than zero.")
+
+    @staticmethod
+    def _validate_transaction_type(transaction_type: TransactionType | str) -> TransactionType:
+        """Validate transaction type."""
+        try:
+            return TransactionType(transaction_type)
+        except ValueError:
+            valid_types = ", ".join(item.value for item in TransactionType)
+            raise InvalidOperationError(
+                f"Invalid transaction type: {transaction_type}. Available types: {valid_types}."
+            )
+
+    @staticmethod
+    def _validate_status(status: TransactionStatus | str) -> TransactionStatus:
+        """Validate transaction status."""
+        try:
+            return TransactionStatus(status)
+        except ValueError:
+            valid_statuses = ", ".join(item.value for item in TransactionStatus)
+            raise InvalidOperationError(
+                f"Invalid transaction status: {status}. Available statuses: {valid_statuses}."
+            )
+
+    @staticmethod
+    def _validate_priority(priority: int) -> int:
+        """Validate queue priority."""
+        if not isinstance(priority, int):
+            raise InvalidOperationError("Transaction priority must be an integer.")
+
+        return priority
+
+    @staticmethod
+    def _validate_retry_count(max_retries: int) -> int:
+        """Validate retry attempts count."""
+        if not isinstance(max_retries, int):
+            raise InvalidOperationError("Max retries must be an integer.")
+
+        if max_retries < 0:
+            raise InvalidOperationError("Max retries cannot be negative.")
+
+        return max_retries
+
+    @staticmethod
+    def _validate_scheduled_at(scheduled_at: datetime) -> datetime:
+        """Validate scheduled processing timestamp."""
+        if not isinstance(scheduled_at, datetime):
+            raise InvalidOperationError("Transaction scheduled_at must be a datetime.")
+
+        return scheduled_at
+
+    def mark_processing(self) -> None:
+        """Mark transaction as currently being processed."""
+        self.status = TransactionStatus.PROCESSING
+        self.updated_at = datetime.now()
+
+    def mark_completed(self) -> None:
+        """Mark transaction as completed."""
+        self.status = TransactionStatus.COMPLETED
+        self.failure_reason = None
+        self.processed_at = datetime.now()
+        self.updated_at = self.processed_at
+
+    def mark_failed(self, reason: str) -> None:
+        """Mark transaction as failed and record the reason."""
+        self.status = TransactionStatus.FAILED
+        self.failure_reason = reason
+        self.updated_at = datetime.now()
+
+    def mark_canceled(self, reason: str = "Canceled by request.") -> None:
+        """Mark transaction as canceled."""
+        self.status = TransactionStatus.CANCELED
+        self.failure_reason = reason
+        self.updated_at = datetime.now()
+
+    def to_dict(self) -> dict:
+        """Return transaction state as a serializable dictionary."""
+        return {
+            "transaction_id": self.transaction_id,
+            "transaction_type": self.transaction_type.value,
+            "amount": str(self.amount),
+            "currency": self.currency.value,
+            "commission": str(self.commission),
+            "sender_account_id": self.sender_account_id,
+            "recipient_account_id": self.recipient_account_id,
+            "status": self.status.value,
+            "failure_reason": self.failure_reason,
+            "priority": self.priority,
+            "scheduled_at": self.scheduled_at.isoformat(),
+            "is_external": self.is_external,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "processed_at": self.processed_at.isoformat() if self.processed_at else None,
+        }
+
+    def __str__(self) -> str:
+        """Return human-readable transaction representation."""
+        return (
+            f"Transaction {self.transaction_id} | "
+            f"Type: {self.transaction_type.value} | "
+            f"Amount: {self.amount} {self.currency.value} | "
+            f"Status: {self.status.value}"
+        )
+
+
+class TransactionQueue:
+    """Priority queue for immediate, delayed, and canceled transactions."""
+
+    def __init__(self) -> None:
+        self._transactions: list[Transaction] = []
+
+    def add(
+        self,
+        transaction: Transaction,
+        priority: int | None = None,
+        scheduled_at: datetime | None = None,
+    ) -> None:
+        """Add transaction to the queue with optional priority and delay."""
+        if transaction.status != TransactionStatus.PENDING:
+            raise InvalidOperationError("Only pending transactions can be queued.")
+
+        if self.get_transaction(transaction.transaction_id):
+            raise InvalidOperationError(
+                f"Transaction already exists in queue: {transaction.transaction_id}."
+            )
+
+        if priority is not None:
+            transaction.priority = Transaction._validate_priority(priority)
+
+        if scheduled_at is not None:
+            transaction.scheduled_at = Transaction._validate_scheduled_at(scheduled_at)
+
+        transaction.updated_at = datetime.now()
+        self._transactions.append(transaction)
+
+    def get_transaction(self, transaction_id: str) -> Transaction | None:
+        """Return transaction by id if it is queued."""
+        for transaction in self._transactions:
+            if transaction.transaction_id == transaction_id:
+                return transaction
+
+        return None
+
+    def cancel(self, transaction_id: str, reason: str = "Canceled in queue.") -> bool:
+        """Cancel a queued transaction by id."""
+        transaction = self.get_transaction(transaction_id)
+
+        if not transaction or transaction.status != TransactionStatus.PENDING:
+            return False
+
+        transaction.mark_canceled(reason)
+        return True
+
+    def get_ready_transactions(self, current_time: datetime | None = None) -> list[Transaction]:
+        """Return ready pending transactions ordered by priority and creation time."""
+        now = current_time or datetime.now()
+
+        if not isinstance(now, datetime):
+            raise InvalidOperationError("Current time must be a datetime.")
+
+        ready_transactions = [
+            transaction
+            for transaction in self._transactions
+            if transaction.status == TransactionStatus.PENDING
+            and transaction.scheduled_at <= now
+        ]
+        return sorted(
+            ready_transactions,
+            key=lambda transaction: (-transaction.priority, transaction.created_at),
+        )
+
+    def remove(self, transaction_id: str) -> bool:
+        """Remove a transaction from the queue."""
+        transaction = self.get_transaction(transaction_id)
+
+        if not transaction:
+            return False
+
+        self._transactions.remove(transaction)
+        return True
+
+    def pending_count(self) -> int:
+        """Return number of pending transactions in the queue."""
+        return len([
+            transaction
+            for transaction in self._transactions
+            if transaction.status == TransactionStatus.PENDING
+        ])
+
+    def all_transactions(self) -> list[Transaction]:
+        """Return a queue snapshot."""
+        return list(self._transactions)
+
 class Client:
     """Bank client with profile, security status, and linked accounts."""
 
@@ -814,6 +1067,10 @@ class Bank:
             currency=currency,
             **account_options,
         )
+
+        if account.account_id in self.accounts:
+            raise InvalidOperationError(f"Account already exists: {account.account_id}.")
+
         self.accounts[account.account_id] = account
         client.add_account(account.account_id)
         return account
@@ -893,7 +1150,23 @@ class Bank:
         normalized_owner = owner.lower().strip() if owner else None
         normalized_status = AccountStatus(status) if status else None
         normalized_currency = Currency(currency) if currency else None
-        normalized_account_type = account_type.lower().strip() if account_type else None
+        normalized_account_class = None
+
+        if account_type:
+            normalized_account_type = account_type.lower().strip()
+            normalized_account_class = self.ACCOUNT_TYPES.get(normalized_account_type)
+
+            if normalized_account_class is None:
+                for registered_account_class in set(self.ACCOUNT_TYPES.values()):
+                    if registered_account_class.__name__.lower() == normalized_account_type:
+                        normalized_account_class = registered_account_class
+                        break
+
+            if normalized_account_class is None:
+                valid_types = ", ".join(sorted(self.ACCOUNT_TYPES))
+                raise InvalidOperationError(
+                    f"Invalid account type: {account_type}. Available types: {valid_types}."
+                )
 
         result = []
 
@@ -907,7 +1180,7 @@ class Bank:
             if normalized_currency and account.currency != normalized_currency:
                 continue
 
-            if normalized_account_type and account.__class__.__name__.lower() != normalized_account_type:
+            if normalized_account_class and type(account) is not normalized_account_class:
                 continue
 
             result.append(account)
@@ -975,3 +1248,208 @@ class Bank:
             "total_balance": self.get_total_balance(),
             "security_events": list(self.security_events),
         }
+
+class TransactionProcessor:
+    """Process queued transactions for a bank account registry."""
+
+    DEFAULT_EXCHANGE_RATES = {
+        Currency.RUB.value: Decimal("1"),
+        Currency.USD.value: Decimal("90"),
+        Currency.EUR.value: Decimal("100"),
+        Currency.KZT.value: Decimal("0.2"),
+        Currency.CNY.value: Decimal("12"),
+    }
+
+    def __init__(
+        self,
+        bank: Bank,
+        exchange_rates: dict[Currency | str, Decimal | int | float | str] | None = None,
+        external_transfer_fee_rate: Decimal | int | float | str = Decimal("0.01"),
+        internal_transfer_fee: Decimal | int | float | str = Decimal("0"),
+    ) -> None:
+        self.bank = bank
+        self.exchange_rates = self._validate_exchange_rates(
+            exchange_rates or self.DEFAULT_EXCHANGE_RATES
+        )
+        self.external_transfer_fee_rate = AbstractAccount._validate_amount(
+            external_transfer_fee_rate
+        )
+        self.internal_transfer_fee = AbstractAccount._validate_amount(internal_transfer_fee)
+        self.error_log: list[dict] = []
+        self.processed_transactions: list[str] = []
+
+    @staticmethod
+    def _validate_exchange_rates(
+        exchange_rates: dict[Currency | str, Decimal | int | float | str],
+    ) -> dict[str, Decimal]:
+        """Validate conversion rates against the base currency."""
+        validated_rates = {}
+
+        for currency, rate in exchange_rates.items():
+            validated_currency = BankAccount._validate_currency(currency)
+            validated_rate = AbstractAccount._validate_amount(rate)
+
+            if validated_rate == 0:
+                raise InvalidOperationError("Exchange rate must be greater than zero.")
+
+            validated_rates[validated_currency.value] = validated_rate
+
+        missing_currencies = [
+            currency.value
+            for currency in Currency
+            if currency.value not in validated_rates
+        ]
+
+        if missing_currencies:
+            raise InvalidOperationError(
+                f"Missing exchange rates for: {', '.join(missing_currencies)}."
+            )
+
+        return validated_rates
+
+    def _get_account(self, account_id: str | None, role: str) -> BankAccount:
+        """Return account from the managed bank by id."""
+        if not account_id:
+            raise InvalidOperationError(f"{role} account is required.")
+
+        return self.bank._get_account(account_id)
+
+    def _convert(
+        self,
+        amount: Decimal,
+        source_currency: Currency,
+        target_currency: Currency,
+    ) -> Decimal:
+        """Convert amount between supported currencies."""
+        if source_currency == target_currency:
+            return amount
+
+        source_rate = self.exchange_rates[source_currency.value]
+        target_rate = self.exchange_rates[target_currency.value]
+        return amount * source_rate / target_rate
+
+    def _calculate_commission(self, transaction: Transaction) -> Decimal:
+        """Calculate transaction commission in transaction currency."""
+        if transaction.commission > 0:
+            return transaction.commission
+
+        if transaction.transaction_type == TransactionType.TRANSFER and transaction.is_external:
+            return transaction.amount * self.external_transfer_fee_rate
+
+        if transaction.transaction_type == TransactionType.TRANSFER:
+            return self.internal_transfer_fee
+
+        return Decimal("0")
+
+    def _ensure_transfer_is_allowed(self, sender_account: BankAccount) -> None:
+        """Block transfers from negative balances except for premium accounts."""
+        if sender_account.balance < 0 and not isinstance(sender_account, PremiumAccount):
+            raise InvalidOperationError(
+                "Transfers from negative balance are allowed only for premium accounts."
+            )
+
+    def process_transaction(self, transaction: Transaction) -> Transaction:
+        """Process one transaction with retry attempts and error logging."""
+        if transaction.status != TransactionStatus.PENDING:
+            raise InvalidOperationError("Only pending transactions can be processed.")
+
+        while transaction.retry_count <= transaction.max_retries:
+            try:
+                transaction.mark_processing()
+                self._apply_transaction(transaction)
+                transaction.mark_completed()
+                self.processed_transactions.append(transaction.transaction_id)
+                return transaction
+            except Exception as error:
+                reason = str(error)
+                self._record_error(transaction, reason)
+
+                if transaction.retry_count >= transaction.max_retries:
+                    transaction.mark_failed(reason)
+                    return transaction
+
+                transaction.retry_count += 1
+                transaction.status = TransactionStatus.PENDING
+                transaction.updated_at = datetime.now()
+
+        return transaction
+
+    def _apply_transaction(self, transaction: Transaction) -> None:
+        """Apply transaction balance changes."""
+        commission = self._calculate_commission(transaction)
+        transaction.commission = commission
+
+        if transaction.transaction_type == TransactionType.DEPOSIT:
+            recipient_account = self._get_account(
+                transaction.recipient_account_id,
+                "Recipient",
+            )
+            deposit_amount = self._convert(
+                transaction.amount,
+                transaction.currency,
+                recipient_account.currency,
+            )
+            recipient_account.deposit(deposit_amount)
+            return
+
+        if transaction.transaction_type == TransactionType.WITHDRAW:
+            sender_account = self._get_account(transaction.sender_account_id, "Sender")
+            withdraw_amount = self._convert(
+                transaction.amount + commission,
+                transaction.currency,
+                sender_account.currency,
+            )
+            sender_account.withdraw(withdraw_amount)
+            return
+
+        if transaction.transaction_type == TransactionType.TRANSFER:
+            sender_account = self._get_account(transaction.sender_account_id, "Sender")
+            recipient_account = self._get_account(
+                transaction.recipient_account_id,
+                "Recipient",
+            )
+            self._ensure_transfer_is_allowed(sender_account)
+            sender_account._ensure_account_is_available()
+            recipient_account._ensure_account_is_available()
+
+            debit_amount = self._convert(
+                transaction.amount + commission,
+                transaction.currency,
+                sender_account.currency,
+            )
+            credit_amount = self._convert(
+                transaction.amount,
+                transaction.currency,
+                recipient_account.currency,
+            )
+            sender_account.withdraw(debit_amount)
+            recipient_account.deposit(credit_amount)
+            return
+
+        raise InvalidOperationError("Unsupported transaction type.")
+
+    def process_queue(
+        self,
+        transaction_queue: TransactionQueue,
+        current_time: datetime | None = None,
+    ) -> list[Transaction]:
+        """Process all ready transactions from a queue."""
+        processed = []
+
+        for transaction in transaction_queue.get_ready_transactions(current_time):
+            processed_transaction = self.process_transaction(transaction)
+            processed.append(processed_transaction)
+            transaction_queue.remove(transaction.transaction_id)
+
+        return processed
+
+    def _record_error(self, transaction: Transaction, reason: str) -> None:
+        """Record transaction processing failure."""
+        self.error_log.append(
+            {
+                "transaction_id": transaction.transaction_id,
+                "reason": reason,
+                "retry_count": transaction.retry_count,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
