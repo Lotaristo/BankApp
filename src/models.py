@@ -1,5 +1,6 @@
+import json
 from abc import ABC, abstractmethod
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from uuid import uuid4
@@ -72,6 +73,24 @@ class TransactionStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
+
+
+
+class AuditLevel(str, Enum):
+    """Audit event importance level."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+class RiskLevel(str, Enum):
+    """Risk severity level for banking operations."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 class Currency(str, Enum):
     """
@@ -1249,6 +1268,285 @@ class Bank:
             "security_events": list(self.security_events),
         }
 
+
+class AuditLog:
+    """In-memory and file-backed audit event storage."""
+
+    LEVEL_ORDER = {
+        AuditLevel.INFO: 1,
+        AuditLevel.WARNING: 2,
+        AuditLevel.ERROR: 3,
+        AuditLevel.CRITICAL: 4,
+    }
+
+    def __init__(self, file_path: str | None = None) -> None:
+        self.events: list[dict] = []
+        self.file_path = file_path
+
+    def log(
+        self,
+        level: AuditLevel | str,
+        event_type: str,
+        message: str,
+        transaction: Transaction | None = None,
+        client_id: str | None = None,
+        account_id: str | None = None,
+        risk_level: RiskLevel | str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Store an audit event in memory and optionally append it to a file."""
+        validated_level = AuditLevel(level)
+        validated_risk_level = RiskLevel(risk_level).value if risk_level else None
+        event = {
+            "event_id": uuid4().hex[:14],
+            "timestamp": datetime.now().isoformat(),
+            "level": validated_level.value,
+            "event_type": event_type,
+            "message": message,
+            "transaction_id": transaction.transaction_id if transaction else None,
+            "client_id": client_id,
+            "account_id": account_id,
+            "risk_level": validated_risk_level,
+            "metadata": metadata or {},
+        }
+        self.events.append(event)
+
+        if self.file_path:
+            self._append_to_file(event)
+
+        return event
+
+    def _append_to_file(self, event: dict) -> None:
+        """Append one audit event as a JSON line."""
+        with open(self.file_path, "a", encoding="utf-8") as audit_file:
+            audit_file.write(json.dumps(event, ensure_ascii=True) + "\n")
+
+    def save_to_file(self, file_path: str | None = None) -> None:
+        """Persist all in-memory events to a JSONL file."""
+        target_file_path = file_path or self.file_path
+
+        if not target_file_path:
+            raise InvalidOperationError("Audit file path is required.")
+
+        with open(target_file_path, "w", encoding="utf-8") as audit_file:
+            for event in self.events:
+                audit_file.write(json.dumps(event, ensure_ascii=True) + "\n")
+
+    def filter_events(
+        self,
+        level: AuditLevel | str | None = None,
+        min_level: AuditLevel | str | None = None,
+        event_type: str | None = None,
+        transaction_id: str | None = None,
+        client_id: str | None = None,
+        account_id: str | None = None,
+        risk_level: RiskLevel | str | None = None,
+    ) -> list[dict]:
+        """Filter audit events by common audit dimensions."""
+        exact_level = AuditLevel(level).value if level else None
+        minimum_level = AuditLevel(min_level) if min_level else None
+        validated_risk_level = RiskLevel(risk_level).value if risk_level else None
+        filtered_events = []
+
+        for event in self.events:
+            event_level = AuditLevel(event["level"])
+
+            if exact_level and event["level"] != exact_level:
+                continue
+
+            if minimum_level and self.LEVEL_ORDER[event_level] < self.LEVEL_ORDER[minimum_level]:
+                continue
+
+            if event_type and event["event_type"] != event_type:
+                continue
+
+            if transaction_id and event["transaction_id"] != transaction_id:
+                continue
+
+            if client_id and event["client_id"] != client_id:
+                continue
+
+            if account_id and event["account_id"] != account_id:
+                continue
+
+            if validated_risk_level and event["risk_level"] != validated_risk_level:
+                continue
+
+            filtered_events.append(event)
+
+        return filtered_events
+
+    def get_suspicious_operations(self) -> list[dict]:
+        """Return audit events for medium and high risk operations."""
+        return [
+            event
+            for event in self.events
+            if event.get("risk_level") in {RiskLevel.MEDIUM.value, RiskLevel.HIGH.value}
+        ]
+
+    def get_error_statistics(self) -> dict:
+        """Return grouped error statistics from audit events."""
+        statistics = {
+            "total_errors": 0,
+            "by_event_type": {},
+            "by_message": {},
+        }
+
+        for event in self.filter_events(min_level=AuditLevel.ERROR):
+            statistics["total_errors"] += 1
+            event_type = event["event_type"]
+            message = event["message"]
+            statistics["by_event_type"][event_type] = (
+                statistics["by_event_type"].get(event_type, 0) + 1
+            )
+            statistics["by_message"][message] = statistics["by_message"].get(message, 0) + 1
+
+        return statistics
+
+
+class RiskAnalyzer:
+    """Analyze transaction risk and maintain client risk profiles."""
+
+    def __init__(
+        self,
+        large_amount_threshold: Decimal | int | float | str = Decimal("100000"),
+        frequent_operations_threshold: int = 3,
+        frequent_operations_window_minutes: int = 10,
+    ) -> None:
+        self.large_amount_threshold = AbstractAccount._validate_amount(large_amount_threshold)
+        self.frequent_operations_threshold = frequent_operations_threshold
+        self.frequent_operations_window_minutes = frequent_operations_window_minutes
+        self.client_operation_times: dict[str, list[datetime]] = {}
+        self.known_recipients: dict[str, set[str]] = {}
+        self.suspicious_operations: list[dict] = []
+        self.client_risk_scores: dict[str, int] = {}
+        self.client_risk_reasons: dict[str, list[str]] = {}
+
+    def analyze(
+        self,
+        transaction: Transaction,
+        bank: Bank,
+        current_time: datetime | None = None,
+    ) -> dict:
+        """Analyze transaction and return risk details."""
+        now = current_time or datetime.now()
+        client_id = self._find_client_id_by_account(bank, transaction.sender_account_id)
+        reasons = []
+        score = 0
+
+        if transaction.amount >= self.large_amount_threshold:
+            reasons.append("large_amount")
+            score += 2
+
+        if client_id and self._is_frequent_operation(client_id, now):
+            reasons.append("frequent_operations")
+            score += 2
+
+        if self._is_new_recipient(transaction, client_id):
+            reasons.append("new_recipient")
+            score += 1
+
+        if time(0, 0) <= now.time() < time(5, 0):
+            reasons.append("night_operation")
+            score += 2
+
+        if score >= 3:
+            risk_level = RiskLevel.HIGH
+        elif score > 0:
+            risk_level = RiskLevel.MEDIUM
+        else:
+            risk_level = RiskLevel.LOW
+
+        risk_report = {
+            "transaction_id": transaction.transaction_id,
+            "client_id": client_id,
+            "risk_level": risk_level.value,
+            "risk_score": score,
+            "reasons": reasons,
+        }
+
+        if risk_level != RiskLevel.LOW:
+            self.suspicious_operations.append(risk_report)
+            if client_id:
+                self.client_risk_scores[client_id] = self.client_risk_scores.get(client_id, 0) + score
+                self.client_risk_reasons.setdefault(client_id, []).extend(reasons)
+
+        return risk_report
+
+    def register_transaction(self, transaction: Transaction, bank: Bank) -> None:
+        """Record a successfully processed transaction as known client activity."""
+        client_id = self._find_client_id_by_account(bank, transaction.sender_account_id)
+
+        if not client_id:
+            return
+
+        self.client_operation_times.setdefault(client_id, []).append(datetime.now())
+
+        if transaction.recipient_account_id:
+            self.known_recipients.setdefault(client_id, set()).add(transaction.recipient_account_id)
+
+    def _is_frequent_operation(self, client_id: str, now: datetime) -> bool:
+        """Return True when client has too many recent operations."""
+        window_start = now - timedelta(minutes=self.frequent_operations_window_minutes)
+        recent_operations = [
+            operation_time
+            for operation_time in self.client_operation_times.get(client_id, [])
+            if operation_time >= window_start
+        ]
+        self.client_operation_times[client_id] = recent_operations
+        return len(recent_operations) >= self.frequent_operations_threshold
+
+    def _is_new_recipient(self, transaction: Transaction, client_id: str | None) -> bool:
+        """Return True when transfer recipient is new for the sender."""
+        if (
+            transaction.transaction_type != TransactionType.TRANSFER
+            or not client_id
+            or not transaction.recipient_account_id
+        ):
+            return False
+
+        return transaction.recipient_account_id not in self.known_recipients.get(client_id, set())
+
+    @staticmethod
+    def _find_client_id_by_account(bank: Bank, account_id: str | None) -> str | None:
+        """Find owning client id for an account."""
+        if not account_id:
+            return None
+
+        for client in bank.clients.values():
+            if account_id in client.account_ids:
+                return client.client_id
+
+        return None
+
+    def get_suspicious_operations(self) -> list[dict]:
+        """Return suspicious risk reports."""
+        return list(self.suspicious_operations)
+
+    def get_client_risk_profile(self, client_id: str) -> dict:
+        """Return aggregated risk profile for a client."""
+        score = self.client_risk_scores.get(client_id, 0)
+
+        if score >= 6:
+            risk_level = RiskLevel.HIGH
+        elif score > 0:
+            risk_level = RiskLevel.MEDIUM
+        else:
+            risk_level = RiskLevel.LOW
+
+        reasons = self.client_risk_reasons.get(client_id, [])
+        reason_counts = {
+            reason: reasons.count(reason)
+            for reason in sorted(set(reasons))
+        }
+
+        return {
+            "client_id": client_id,
+            "risk_level": risk_level.value,
+            "risk_score": score,
+            "reason_counts": reason_counts,
+        }
+
 class TransactionProcessor:
     """Process queued transactions for a bank account registry."""
 
@@ -1266,6 +1564,8 @@ class TransactionProcessor:
         exchange_rates: dict[Currency | str, Decimal | int | float | str] | None = None,
         external_transfer_fee_rate: Decimal | int | float | str = Decimal("0.01"),
         internal_transfer_fee: Decimal | int | float | str = Decimal("0"),
+        audit_log: AuditLog | None = None,
+        risk_analyzer: RiskAnalyzer | None = None,
     ) -> None:
         self.bank = bank
         self.exchange_rates = self._validate_exchange_rates(
@@ -1277,6 +1577,8 @@ class TransactionProcessor:
         self.internal_transfer_fee = AbstractAccount._validate_amount(internal_transfer_fee)
         self.error_log: list[dict] = []
         self.processed_transactions: list[str] = []
+        self.audit_log = audit_log or AuditLog()
+        self.risk_analyzer = risk_analyzer or RiskAnalyzer()
 
     @staticmethod
     def _validate_exchange_rates(
@@ -1349,16 +1651,46 @@ class TransactionProcessor:
             )
 
     def process_transaction(self, transaction: Transaction) -> Transaction:
-        """Process one transaction with retry attempts and error logging."""
+        """Process one transaction with retry attempts, audit, and risk checks."""
         if transaction.status != TransactionStatus.PENDING:
             raise InvalidOperationError("Only pending transactions can be processed.")
+
+        risk_time = datetime.combine(date.today(), self.bank._get_current_time())
+        risk_report = self.risk_analyzer.analyze(
+            transaction,
+            self.bank,
+            current_time=risk_time,
+        )
+        self._audit_risk_report(transaction, risk_report)
+
+        if risk_report["risk_level"] == RiskLevel.HIGH.value:
+            reasons = ", ".join(risk_report["reasons"])
+            reason = f"High-risk transaction blocked: {reasons}."
+            transaction.mark_failed(reason)
+            self._record_error(transaction, reason)
+            self.audit_log.log(
+                AuditLevel.ERROR,
+                "transaction_failed",
+                reason,
+                transaction=transaction,
+            )
+            return transaction
 
         while transaction.retry_count <= transaction.max_retries:
             try:
                 transaction.mark_processing()
                 self._apply_transaction(transaction)
                 transaction.mark_completed()
+                self.risk_analyzer.register_transaction(transaction, self.bank)
                 self.processed_transactions.append(transaction.transaction_id)
+                self.audit_log.log(
+                    AuditLevel.INFO,
+                    "transaction_completed",
+                    "Transaction completed.",
+                    transaction=transaction,
+                    risk_level=risk_report["risk_level"],
+                    metadata=risk_report,
+                )
                 return transaction
             except Exception as error:
                 reason = str(error)
@@ -1366,6 +1698,12 @@ class TransactionProcessor:
 
                 if transaction.retry_count >= transaction.max_retries:
                     transaction.mark_failed(reason)
+                    self.audit_log.log(
+                        AuditLevel.ERROR,
+                        "transaction_failed",
+                        reason,
+                        transaction=transaction,
+                    )
                     return transaction
 
                 transaction.retry_count += 1
@@ -1374,8 +1712,38 @@ class TransactionProcessor:
 
         return transaction
 
+
+    def _audit_risk_report(self, transaction: Transaction, risk_report: dict) -> None:
+        """Write risk analyzer output to the audit log."""
+        risk_level = RiskLevel(risk_report["risk_level"])
+
+        if risk_level == RiskLevel.HIGH:
+            audit_level = AuditLevel.CRITICAL
+            event_type = "transaction_blocked_by_risk"
+            message = "High-risk transaction detected."
+        elif risk_level == RiskLevel.MEDIUM:
+            audit_level = AuditLevel.WARNING
+            event_type = "transaction_suspicious"
+            message = "Suspicious transaction detected."
+        else:
+            audit_level = AuditLevel.INFO
+            event_type = "transaction_risk_checked"
+            message = "Transaction risk checked."
+
+        self.audit_log.log(
+            audit_level,
+            event_type,
+            message,
+            transaction=transaction,
+            client_id=risk_report.get("client_id"),
+            risk_level=risk_level,
+            metadata=risk_report,
+        )
+
     def _apply_transaction(self, transaction: Transaction) -> None:
         """Apply transaction balance changes."""
+        self.bank._ensure_operations_are_allowed()
+
         commission = self._calculate_commission(transaction)
         transaction.commission = commission
 
@@ -1452,4 +1820,11 @@ class TransactionProcessor:
                 "retry_count": transaction.retry_count,
                 "timestamp": datetime.now().isoformat(),
             }
+        )
+        self.audit_log.log(
+            AuditLevel.ERROR,
+            "transaction_processing_error",
+            reason,
+            transaction=transaction,
+            metadata={"retry_count": transaction.retry_count},
         )

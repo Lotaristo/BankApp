@@ -1,7 +1,10 @@
+import tempfile
+from pathlib import Path
 from datetime import datetime, time, timedelta
 
 from models import (
     AccountFrozenError,
+    AuditLog,
     AuthenticationError,
     Bank,
     BankAccount,
@@ -12,6 +15,7 @@ from models import (
     InvestmentAccount,
     InvalidOperationError,
     PremiumAccount,
+    RiskAnalyzer,
     SavingsAccount,
     SecurityRestrictionError,
     Transaction,
@@ -419,12 +423,151 @@ def run_day_4_demo() -> None:
     ]))
     print("-" * 80)
 
+
+
+def run_day_5_demo() -> None:
+    """Run a demo for Day 5 audit and risk analysis requirements."""
+    audit_file_path = str(Path(tempfile.gettempdir()) / "bankapp_day5_audit.jsonl")
+    audit_log = AuditLog(file_path=audit_file_path)
+    risk_analyzer = RiskAnalyzer(
+        large_amount_threshold=100_000,
+        frequent_operations_threshold=3,
+        frequent_operations_window_minutes=30,
+    )
+    bank = Bank("Audit Bank", now_provider=lambda: time(14, 0))
+    processor = TransactionProcessor(
+        bank,
+        audit_log=audit_log,
+        risk_analyzer=risk_analyzer,
+    )
+
+    first_client = Client("Audit Sender", age=36, password="sender-pass")
+    second_client = Client("Known Receiver", age=32, password="known-pass")
+    third_client = Client("New Receiver", age=27, password="new-pass")
+    bank.add_client(first_client)
+    bank.add_client(second_client)
+    bank.add_client(third_client)
+
+    sender_account = bank.open_account(
+        first_client.client_id,
+        account_type="base",
+        balance=300_000,
+        currency=Currency.RUB,
+    )
+    known_receiver = bank.open_account(
+        second_client.client_id,
+        account_type="base",
+        balance=10_000,
+        currency=Currency.RUB,
+    )
+    new_receiver = bank.open_account(
+        third_client.client_id,
+        account_type="base",
+        balance=5_000,
+        currency=Currency.RUB,
+    )
+
+    transactions = [
+        Transaction(
+            "transfer",
+            1_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            recipient_account_id=known_receiver.account_id,
+        ),
+        Transaction(
+            "deposit",
+            500,
+            Currency.RUB,
+            recipient_account_id=sender_account.account_id,
+        ),
+        Transaction(
+            "withdraw",
+            300,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+        ),
+        Transaction(
+            "transfer",
+            2_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            recipient_account_id=known_receiver.account_id,
+        ),
+        Transaction(
+            "transfer",
+            150_000,
+            Currency.RUB,
+            sender_account_id=sender_account.account_id,
+            recipient_account_id=new_receiver.account_id,
+        ),
+    ]
+
+    for transaction in transactions:
+        processor.process_transaction(transaction)
+
+    night_bank = Bank("Night Audit Bank", now_provider=lambda: time(14, 0))
+    night_client = Client("Night Sender", age=40, password="night-pass")
+    night_receiver_client = Client("Night Receiver", age=41, password="night-receiver")
+    night_bank.add_client(night_client)
+    night_bank.add_client(night_receiver_client)
+    night_sender = night_bank.open_account(
+        night_client.client_id,
+        account_type="base",
+        balance=50_000,
+        currency=Currency.RUB,
+    )
+    night_receiver = night_bank.open_account(
+        night_receiver_client.client_id,
+        account_type="base",
+        balance=1_000,
+        currency=Currency.RUB,
+    )
+    night_bank.now_provider = lambda: time(2, 30)
+    night_processor = TransactionProcessor(
+        night_bank,
+        audit_log=audit_log,
+        risk_analyzer=risk_analyzer,
+    )
+    night_transaction = Transaction(
+        "transfer",
+        1_000,
+        Currency.RUB,
+        sender_account_id=night_sender.account_id,
+        recipient_account_id=night_receiver.account_id,
+    )
+    night_processor.process_transaction(night_transaction)
+
+    audit_log.save_to_file(audit_file_path)
+
+    print("Day 5. Audit and risk analysis:")
+    for transaction in transactions + [night_transaction]:
+        print(transaction.to_dict())
+
+    print("Suspicious audit operations:")
+    print(audit_log.get_suspicious_operations())
+    print("Client risk profile:")
+    print(risk_analyzer.get_client_risk_profile(first_client.client_id))
+    print("Night client risk profile:")
+    print(risk_analyzer.get_client_risk_profile(night_client.client_id))
+    print("Error statistics:")
+    print(audit_log.get_error_statistics())
+    print("Critical audit events:")
+    print(audit_log.filter_events(min_level="critical"))
+    print(f"Audit file: {audit_file_path}")
+    print("Final balances:")
+    show_account(sender_account)
+    show_account(known_receiver)
+    show_account(new_receiver)
+    print("-" * 80)
+
 def main() -> None:
     """Run demonstration scenarios for implemented project days."""
     run_day_1_demo()
     run_day_2_demo()
     run_day_3_demo()
     run_day_4_demo()
+    run_day_5_demo()
 
 
 if __name__ == "__main__":

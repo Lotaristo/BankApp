@@ -14,6 +14,7 @@ The codebase currently contains:
 - advanced account types for savings, premium, and investment scenarios;
 - a central `Bank` class for clients, accounts, and security policies;
 - a transaction model, priority queue, and transaction processor;
+- audit logging and transaction risk analysis;
 - demonstration scenarios in `src/main.py`.
 
 ## Project Structure
@@ -171,6 +172,42 @@ The processor enforces:
 - failed transaction status and refusal reason recording.
 
 The Day 4 demo creates 10 transactions, queues them, cancels one, leaves one delayed, processes ready transactions, and prints final statuses, errors, and balances.
+
+## Day 5: Audit and Risk Analysis
+
+Added audit and risk monitoring in `src/models.py`:
+
+### AuditLog
+
+An audit log with:
+
+- importance levels: `info`, `warning`, `error`, `critical`;
+- in-memory event storage;
+- optional JSONL file persistence;
+- filtering by level, minimum level, event type, transaction, client, account, and risk level;
+- suspicious operation reporting;
+- grouped error statistics.
+
+### RiskAnalyzer
+
+A risk analyzer that detects suspicious operations by:
+
+- large transaction amount;
+- frequent client operations in a configurable time window;
+- transfers to new recipient accounts;
+- operations during the night window.
+
+Risk levels are `low`, `medium`, and `high`. High-risk transactions are blocked by `TransactionProcessor` before balances are changed.
+
+### Audit Reports
+
+The audit/risk layer provides:
+
+- suspicious operation reports through `AuditLog.get_suspicious_operations()` and `RiskAnalyzer.get_suspicious_operations()`;
+- client risk profiles through `RiskAnalyzer.get_client_risk_profile()`;
+- error statistics through `AuditLog.get_error_statistics()`.
+
+The Day 5 demo creates ordinary and suspicious transactions, blocks dangerous operations, writes audit events to a JSONL file, and prints suspicious operations, client risk profiles, error statistics, and final balances.
 ## How to Run
 
 ```bash
