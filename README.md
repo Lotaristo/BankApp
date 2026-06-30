@@ -15,6 +15,7 @@ The codebase currently contains:
 - a central `Bank` class for clients, accounts, and security policies;
 - a transaction model, priority queue, and transaction processor;
 - audit logging and transaction risk analysis;
+- a full-system demonstration scenario with reports;
 - demonstration scenarios in `src/main.py`.
 
 ## Project Structure
@@ -208,6 +209,41 @@ The audit/risk layer provides:
 - error statistics through `AuditLog.get_error_statistics()`.
 
 The Day 5 demo creates ordinary and suspicious transactions, blocks dangerous operations, writes audit events to a JSONL file, and prints suspicious operations, client risk profiles, error statistics, and final balances.
+
+## Day 6: Full Demonstration Program
+
+Added a full-system demonstration in `src/main.py` through `run_day_6_demo()`.
+
+The scenario initializes:
+
+- one bank;
+- 7 clients;
+- 12 accounts across base, savings, premium, and investment account types;
+- a transaction queue;
+- audit logging, risk analysis, and transaction processing.
+
+The simulation creates 45 transactions and includes:
+
+- successful deposits, withdrawals, and transfers;
+- failed transactions against frozen accounts or blocked by risk analysis;
+- suspicious large transfers;
+- delayed transactions that remain pending;
+- canceled transactions;
+- queue logs for added and canceled operations;
+- processed transaction history.
+
+The demo prints user-facing scenarios:
+
+- selected client account list;
+- selected client transaction history;
+- suspicious operations from audit logs.
+
+It also prints reports:
+
+- top 3 clients by total value;
+- transaction status statistics;
+- total bank balance grouped by currency;
+- audit error statistics.
 ## How to Run
 
 ```bash

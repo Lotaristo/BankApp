@@ -773,6 +773,7 @@ class TransactionQueue:
             return False
 
         transaction.mark_canceled(reason)
+        self._transactions.remove(transaction)
         return True
 
     def get_ready_transactions(self, current_time: datetime | None = None) -> list[Transaction]:
@@ -1124,8 +1125,10 @@ class Bank:
             raise AccountClosedError("Closed account cannot be unfrozen.")
 
         account.status = AccountStatus.ACTIVE
+
     def authenticate_client(self, client_id: str, password: str) -> bool:
         """Authenticate a client and block after three failed attempts."""
+        self._ensure_operations_are_allowed()
         client = self._get_client(client_id)
 
         if client.status == ClientStatus.BLOCKED:
@@ -1430,7 +1433,7 @@ class RiskAnalyzer:
     ) -> dict:
         """Analyze transaction and return risk details."""
         now = current_time or datetime.now()
-        client_id = self._find_client_id_by_account(bank, transaction.sender_account_id)
+        client_id = self._find_client_id_for_transaction(bank, transaction)
         reasons = []
         score = 0
 
@@ -1473,14 +1476,20 @@ class RiskAnalyzer:
 
         return risk_report
 
-    def register_transaction(self, transaction: Transaction, bank: Bank) -> None:
+    def register_transaction(
+        self,
+        transaction: Transaction,
+        bank: Bank,
+        current_time: datetime | None = None,
+    ) -> None:
         """Record a successfully processed transaction as known client activity."""
-        client_id = self._find_client_id_by_account(bank, transaction.sender_account_id)
+        client_id = self._find_client_id_for_transaction(bank, transaction)
 
         if not client_id:
             return
 
-        self.client_operation_times.setdefault(client_id, []).append(datetime.now())
+        operation_time = current_time or datetime.now()
+        self.client_operation_times.setdefault(client_id, []).append(operation_time)
 
         if transaction.recipient_account_id:
             self.known_recipients.setdefault(client_id, set()).add(transaction.recipient_account_id)
@@ -1494,7 +1503,7 @@ class RiskAnalyzer:
             if operation_time >= window_start
         ]
         self.client_operation_times[client_id] = recent_operations
-        return len(recent_operations) >= self.frequent_operations_threshold
+        return len(recent_operations) + 1 >= self.frequent_operations_threshold
 
     def _is_new_recipient(self, transaction: Transaction, client_id: str | None) -> bool:
         """Return True when transfer recipient is new for the sender."""
@@ -1506,6 +1515,17 @@ class RiskAnalyzer:
             return False
 
         return transaction.recipient_account_id not in self.known_recipients.get(client_id, set())
+
+    def _find_client_id_for_transaction(
+        self,
+        bank: Bank,
+        transaction: Transaction,
+    ) -> str | None:
+        """Find the client related to a transaction."""
+        return self._find_client_id_by_account(
+            bank,
+            transaction.sender_account_id or transaction.recipient_account_id,
+        )
 
     @staticmethod
     def _find_client_id_by_account(bank: Bank, account_id: str | None) -> str | None:
@@ -1663,6 +1683,20 @@ class TransactionProcessor:
         )
         self._audit_risk_report(transaction, risk_report)
 
+        try:
+            self.bank._ensure_operations_are_allowed()
+        except Exception as error:
+            reason = str(error)
+            transaction.mark_failed(reason)
+            self._record_error(transaction, reason)
+            self.audit_log.log(
+                AuditLevel.ERROR,
+                "transaction_failed",
+                reason,
+                transaction=transaction,
+            )
+            return transaction
+
         if risk_report["risk_level"] == RiskLevel.HIGH.value:
             reasons = ", ".join(risk_report["reasons"])
             reason = f"High-risk transaction blocked: {reasons}."
@@ -1681,7 +1715,11 @@ class TransactionProcessor:
                 transaction.mark_processing()
                 self._apply_transaction(transaction)
                 transaction.mark_completed()
-                self.risk_analyzer.register_transaction(transaction, self.bank)
+                self.risk_analyzer.register_transaction(
+                    transaction,
+                    self.bank,
+                    current_time=risk_time,
+                )
                 self.processed_transactions.append(transaction.transaction_id)
                 self.audit_log.log(
                     AuditLevel.INFO,

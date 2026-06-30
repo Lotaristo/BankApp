@@ -561,6 +561,276 @@ def run_day_5_demo() -> None:
     show_account(new_receiver)
     print("-" * 80)
 
+
+
+def run_day_6_demo() -> dict:
+    """Run a full-system demo with clients, accounts, queue, audit, and reports."""
+    audit_log = AuditLog()
+    risk_analyzer = RiskAnalyzer(
+        large_amount_threshold=75_000,
+        frequent_operations_threshold=20,
+        frequent_operations_window_minutes=60,
+    )
+    bank = Bank("Full Demo Bank", now_provider=lambda: time(13, 0))
+    queue = TransactionQueue()
+    processor = TransactionProcessor(
+        bank,
+        audit_log=audit_log,
+        risk_analyzer=risk_analyzer,
+    )
+
+    clients = [
+        Client("Alice Demo", 31, "pass-1", contacts={"email": "alice@example.com"}),
+        Client("Boris Demo", 42, "pass-2", contacts={"email": "boris@example.com"}),
+        Client("Clara Demo", 29, "pass-3", contacts={"email": "clara@example.com"}),
+        Client("Denis Demo", 37, "pass-4", contacts={"email": "denis@example.com"}),
+        Client("Eva Demo", 45, "pass-5", contacts={"email": "eva@example.com"}),
+        Client("Farid Demo", 33, "pass-6", contacts={"email": "farid@example.com"}),
+        Client("Gala Demo", 39, "pass-7", contacts={"email": "gala@example.com"}),
+    ]
+
+    for client in clients:
+        bank.add_client(client)
+
+    accounts = []
+    accounts.append(bank.open_account(clients[0].client_id, "base", 120_000, Currency.RUB))
+    accounts.append(bank.open_account(clients[0].client_id, "savings", 90_000, Currency.RUB, min_balance=10_000, monthly_interest_rate="0.01"))
+    accounts.append(bank.open_account(clients[1].client_id, "premium", 15_000, Currency.RUB, overdraft_limit=20_000, withdrawal_limit=80_000, fixed_commission=20))
+    accounts.append(bank.open_account(clients[1].client_id, "base", 1_500, Currency.USD))
+    accounts.append(bank.open_account(clients[2].client_id, "base", 70_000, Currency.RUB))
+    accounts.append(bank.open_account(clients[2].client_id, "investment", 20_000, Currency.USD, portfolio={"stocks": 25_000, "bonds": 10_000, "etf": 15_000}))
+    accounts.append(bank.open_account(clients[3].client_id, "base", 45_000, Currency.RUB))
+    accounts.append(bank.open_account(clients[3].client_id, "savings", 60_000, Currency.EUR, min_balance=5_000, monthly_interest_rate="0.008"))
+    accounts.append(bank.open_account(clients[4].client_id, "base", 30_000, Currency.RUB))
+    accounts.append(bank.open_account(clients[5].client_id, "premium", 5_000, Currency.RUB, overdraft_limit=10_000, withdrawal_limit=30_000, fixed_commission=10))
+    accounts.append(bank.open_account(clients[6].client_id, "base", 25_000, Currency.RUB))
+    accounts.append(bank.open_account(clients[6].client_id, "base", 700, Currency.CNY))
+    frozen_account = accounts[10]
+    bank.freeze_account(frozen_account.account_id, "Day 6 frozen account sample")
+
+    transactions = []
+
+    for index in range(12):
+        transactions.append(
+            Transaction(
+                "deposit",
+                500 + index * 100,
+                Currency.RUB,
+                recipient_account_id=accounts[index % len(accounts)].account_id,
+                priority=index % 3,
+            )
+        )
+
+    for index in range(8):
+        transactions.append(
+            Transaction(
+                "withdraw",
+                300 + index * 150,
+                Currency.RUB,
+                sender_account_id=accounts[index % 10].account_id,
+                priority=2,
+            )
+        )
+
+    transfer_pairs = [
+        (0, 4, 2_000),
+        (4, 6, 1_500),
+        (6, 8, 1_000),
+        (8, 0, 1_200),
+        (1, 4, 2_500),
+        (2, 0, 3_000),
+        (3, 5, 100),
+        (5, 3, 120),
+        (9, 8, 900),
+        (0, 7, 700),
+    ]
+    for priority, (sender_index, recipient_index, amount) in enumerate(transfer_pairs, start=3):
+        transactions.append(
+            Transaction(
+                "transfer",
+                amount,
+                accounts[sender_index].currency,
+                sender_account_id=accounts[sender_index].account_id,
+                recipient_account_id=accounts[recipient_index].account_id,
+                is_external=sender_index in {3, 5},
+                priority=priority,
+            )
+        )
+
+    suspicious_specs = [
+        (0, 8, 85_000),
+        (1, 6, 95_000),
+        (4, 9, 120_000),
+        (6, 2, 80_000),
+        (8, 0, 150_000),
+    ]
+    for sender_index, recipient_index, amount in suspicious_specs:
+        transactions.append(
+            Transaction(
+                "transfer",
+                amount,
+                Currency.RUB,
+                sender_account_id=accounts[sender_index].account_id,
+                recipient_account_id=accounts[recipient_index].account_id,
+                priority=8,
+            )
+        )
+
+    error_specs = [
+        (frozen_account.account_id, accounts[0].account_id, 500),
+        (frozen_account.account_id, accounts[1].account_id, 700),
+        (accounts[8].account_id, accounts[4].account_id, 500_000),
+        (accounts[6].account_id, accounts[0].account_id, 400_000),
+        (accounts[4].account_id, accounts[2].account_id, 300_000),
+    ]
+    for sender_id, recipient_id, amount in error_specs:
+        transactions.append(
+            Transaction(
+                "transfer",
+                amount,
+                Currency.RUB,
+                sender_account_id=sender_id,
+                recipient_account_id=recipient_id,
+                max_retries=1,
+                priority=6,
+            )
+        )
+
+    delayed_transactions = [
+        Transaction(
+            "deposit",
+            1_500,
+            Currency.RUB,
+            recipient_account_id=accounts[0].account_id,
+            scheduled_at=datetime.now() + timedelta(days=1),
+            priority=10,
+        ),
+        Transaction(
+            "withdraw",
+            500,
+            Currency.RUB,
+            sender_account_id=accounts[4].account_id,
+            scheduled_at=datetime.now() + timedelta(days=1),
+            priority=9,
+        ),
+    ]
+    transactions.extend(delayed_transactions)
+
+    cancelable_transactions = [
+        Transaction(
+            "deposit",
+            777,
+            Currency.RUB,
+            recipient_account_id=accounts[2].account_id,
+            priority=7,
+        ),
+        Transaction(
+            "withdraw",
+            888,
+            Currency.RUB,
+            sender_account_id=accounts[0].account_id,
+            priority=7,
+        ),
+        Transaction(
+            "transfer",
+            999,
+            Currency.RUB,
+            sender_account_id=accounts[0].account_id,
+            recipient_account_id=accounts[2].account_id,
+            priority=7,
+        ),
+    ]
+    transactions.extend(cancelable_transactions)
+
+    queue_log = []
+    for transaction in transactions:
+        queue.add(transaction)
+        queue_log.append(
+            {
+                "transaction_id": transaction.transaction_id,
+                "status": "queued",
+                "priority": transaction.priority,
+                "scheduled_at": transaction.scheduled_at.isoformat(),
+            }
+        )
+
+    for transaction in cancelable_transactions[:2]:
+        queue.cancel(transaction.transaction_id, reason="Canceled by demo scenario.")
+        queue_log.append({"transaction_id": transaction.transaction_id, "status": "canceled"})
+
+    processed_transactions = processor.process_queue(queue)
+    history = list(transactions)
+    suspicious_transaction_ids = {
+        event["transaction_id"]
+        for event in audit_log.get_suspicious_operations()
+        if event["transaction_id"]
+    }
+    transaction_stats = {
+        "total": len(history),
+        "queued": len(history),
+        "queue_events": len(queue_log),
+        "processed_ready": len(processed_transactions),
+        "completed": len([item for item in history if item.status == TransactionStatus.COMPLETED]),
+        "failed": len([item for item in history if item.status == TransactionStatus.FAILED]),
+        "canceled": len([item for item in history if item.status == TransactionStatus.CANCELED]),
+        "pending_delayed": queue.pending_count(),
+        "suspicious": len(suspicious_transaction_ids),
+        "errors": len(processor.error_log),
+    }
+
+    selected_client = clients[0]
+    selected_client_accounts = [
+        bank.accounts[account_id]
+        for account_id in selected_client.account_ids
+    ]
+    selected_account_ids = set(selected_client.account_ids)
+    selected_client_history = [
+        transaction.to_dict()
+        for transaction in history
+        if transaction.sender_account_id in selected_account_ids
+        or transaction.recipient_account_id in selected_account_ids
+    ]
+
+    print("Day 6. Full banking system demo:")
+    print(f"Bank: {bank.name}")
+    print(f"Clients: {len(clients)}")
+    print(f"Accounts: {len(accounts)}")
+    print(f"Transactions created: {len(transactions)}")
+    print("Queue log sample:")
+    print(queue_log[:8])
+    print("Execution log:")
+    print([transaction.to_dict() for transaction in processed_transactions[:10]])
+    print("Rejected transactions:")
+    print([transaction.to_dict() for transaction in history if transaction.status == TransactionStatus.FAILED])
+    print("Selected client accounts:")
+    print(selected_client.get_client_info())
+    for account in selected_client_accounts:
+        show_account(account)
+    print("Selected client transaction history:")
+    print(selected_client_history[:10])
+    print("Suspicious operations:")
+    print(audit_log.get_suspicious_operations()[:10])
+    print("Reports:")
+    print("Top 3 clients:", bank.get_clients_ranking()[:3])
+    print("Transaction stats:", transaction_stats)
+    print("Total balance:", bank.get_total_balance())
+    print("Error statistics:", audit_log.get_error_statistics())
+    print("-" * 80)
+
+    return {
+        "bank": bank,
+        "clients": clients,
+        "accounts": accounts,
+        "transactions": history,
+        "queue": queue,
+        "queue_log": queue_log,
+        "processor": processor,
+        "audit_log": audit_log,
+        "risk_analyzer": risk_analyzer,
+        "transaction_stats": transaction_stats,
+        "selected_client_history": selected_client_history,
+    }
+
 def main() -> None:
     """Run demonstration scenarios for implemented project days."""
     run_day_1_demo()
@@ -568,6 +838,7 @@ def main() -> None:
     run_day_3_demo()
     run_day_4_demo()
     run_day_5_demo()
+    run_day_6_demo()
 
 
 if __name__ == "__main__":
