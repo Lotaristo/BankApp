@@ -16,6 +16,7 @@ The codebase currently contains:
 - a transaction model, priority queue, and transaction processor;
 - audit logging and transaction risk analysis;
 - a full-system demonstration scenario with reports;
+- report generation with JSON, CSV, text, and chart exports;
 - demonstration scenarios in `src/main.py`.
 
 ## Project Structure
@@ -244,6 +245,32 @@ It also prints reports:
 - transaction status statistics;
 - total bank balance grouped by currency;
 - audit error statistics.
+
+## Day 7: Reporting and Visualization
+
+Added `ReportBuilder` for report generation and chart exports.
+
+The reporting layer supports:
+
+- client reports with accounts, transaction history, and risk profile;
+- bank reports with total balances, top 3 clients, and transaction statistics;
+- risk reports with suspicious operations, client risk profiles, and audit error statistics;
+- text report formatting;
+- JSON export through `export_to_json()`;
+- CSV export through `export_to_csv()`;
+- text export through `export_text_report()`;
+- chart export through `save_charts()`.
+
+Visualization code is isolated in `src/visualization.py`, while `ReportBuilder` keeps the reporting API and delegates chart generation to that module.
+
+Charts generated with matplotlib:
+
+- pie chart for balances by currency;
+- bar chart for transaction statuses;
+- line chart for completed transaction balance movement.
+
+The Day 7 demo reuses the full Day 6 scenario, writes reports to a temporary `bankapp_day7_reports` directory, and saves chart PNG files.
+
 ## How to Run
 
 ```bash

@@ -1,8 +1,10 @@
+import csv
 import json
 from abc import ABC, abstractmethod
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from pathlib import Path
 from uuid import uuid4
 
 
@@ -1566,6 +1568,169 @@ class RiskAnalyzer:
             "risk_score": score,
             "reason_counts": reason_counts,
         }
+
+
+class ReportBuilder:
+    """Build text, JSON, CSV, and chart reports for the banking system."""
+
+    def __init__(
+        self,
+        bank: Bank,
+        transactions: list[Transaction] | None = None,
+        audit_log: AuditLog | None = None,
+        risk_analyzer: RiskAnalyzer | None = None,
+    ) -> None:
+        self.bank = bank
+        self.transactions = list(transactions or [])
+        self.audit_log = audit_log or AuditLog()
+        self.risk_analyzer = risk_analyzer or RiskAnalyzer()
+
+    def build_client_report(self, client_id: str) -> dict:
+        """Return a structured report for one client."""
+        client = self.bank._get_client(client_id)
+        accounts = [
+            self.bank.accounts[account_id].get_account_info()
+            for account_id in client.account_ids
+            if account_id in self.bank.accounts
+        ]
+        account_ids = set(client.account_ids)
+        transactions = [
+            transaction.to_dict()
+            for transaction in self.transactions
+            if transaction.sender_account_id in account_ids
+            or transaction.recipient_account_id in account_ids
+        ]
+
+        return {
+            "report_type": "client",
+            "generated_at": datetime.now().isoformat(),
+            "client": client.get_client_info(),
+            "accounts": accounts,
+            "transactions": transactions,
+            "risk_profile": self.risk_analyzer.get_client_risk_profile(client_id),
+        }
+
+    def build_bank_report(self) -> dict:
+        """Return a structured bank-wide report."""
+        return {
+            "report_type": "bank",
+            "generated_at": datetime.now().isoformat(),
+            "bank": self.bank.get_bank_info(),
+            "total_balance": self.bank.get_total_balance(),
+            "top_clients": self.bank.get_clients_ranking()[:3],
+            "transaction_statistics": self._get_transaction_statistics(),
+        }
+
+    def build_risk_report(self) -> dict:
+        """Return a structured risk and audit report."""
+        suspicious_operations = self.audit_log.get_suspicious_operations()
+        return {
+            "report_type": "risk",
+            "generated_at": datetime.now().isoformat(),
+            "suspicious_operations": suspicious_operations,
+            "risk_analyzer_operations": self.risk_analyzer.get_suspicious_operations(),
+            "client_risk_profiles": [
+                self.risk_analyzer.get_client_risk_profile(client.client_id)
+                for client in self.bank.clients.values()
+            ],
+            "error_statistics": self.audit_log.get_error_statistics(),
+        }
+
+    def build_text_report(self, report: dict) -> str:
+        """Format a structured report as readable plain text."""
+        lines = [
+            f"Report type: {report.get('report_type')}",
+            f"Generated at: {report.get('generated_at')}",
+        ]
+
+        for key, value in report.items():
+            if key in {"report_type", "generated_at"}:
+                continue
+            lines.append(f"{key}:")
+            lines.append(json.dumps(value, ensure_ascii=True, indent=2))
+
+        return "\n".join(lines)
+
+    def export_to_json(self, report: dict, file_path: str | Path) -> Path:
+        """Export a structured report to JSON."""
+        target_path = Path(file_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            json.dumps(report, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+        return target_path
+
+    def export_to_csv(self, report: dict, file_path: str | Path) -> Path:
+        """Export a structured report to a flat CSV file."""
+        target_path = Path(file_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = self._flatten_report(report)
+
+        with open(target_path, "w", encoding="utf-8", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=["path", "value"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+        return target_path
+
+    def export_text_report(self, report: dict, file_path: str | Path) -> Path:
+        """Export a readable text report."""
+        target_path = Path(file_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(self.build_text_report(report), encoding="utf-8")
+        return target_path
+
+    def save_charts(self, output_dir: str | Path) -> dict[str, Path]:
+        """Save pie, bar, and balance movement charts."""
+        try:
+            try:
+                from visualization import save_report_charts
+            except ImportError:
+                from .visualization import save_report_charts
+
+            return save_report_charts(
+                self.bank,
+                self.transactions,
+                self._get_transaction_statistics(),
+                output_dir,
+            )
+        except ImportError as error:
+            raise InvalidOperationError("matplotlib is required to save charts.") from error
+
+    def _get_transaction_statistics(self) -> dict:
+        """Return transaction counts grouped by status and type."""
+        statistics = {
+            "total": len(self.transactions),
+            "by_status": {},
+            "by_type": {},
+        }
+
+        for transaction in self.transactions:
+            status = transaction.status.value
+            transaction_type = transaction.transaction_type.value
+            statistics["by_status"][status] = statistics["by_status"].get(status, 0) + 1
+            statistics["by_type"][transaction_type] = (
+                statistics["by_type"].get(transaction_type, 0) + 1
+            )
+
+        return statistics
+
+    def _flatten_report(self, value: object, prefix: str = "") -> list[dict[str, str]]:
+        """Flatten nested report data into path/value CSV rows."""
+        rows = []
+
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                nested_prefix = f"{prefix}.{key}" if prefix else str(key)
+                rows.extend(self._flatten_report(nested_value, nested_prefix))
+        elif isinstance(value, list):
+            for index, nested_value in enumerate(value):
+                rows.extend(self._flatten_report(nested_value, f"{prefix}[{index}]"))
+        else:
+            rows.append({"path": prefix, "value": "" if value is None else str(value)})
+
+        return rows
 
 class TransactionProcessor:
     """Process queued transactions for a bank account registry."""

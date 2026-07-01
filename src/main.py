@@ -15,6 +15,7 @@ from models import (
     InvestmentAccount,
     InvalidOperationError,
     PremiumAccount,
+    ReportBuilder,
     RiskAnalyzer,
     SavingsAccount,
     SecurityRestrictionError,
@@ -831,6 +832,90 @@ def run_day_6_demo() -> dict:
         "selected_client_history": selected_client_history,
     }
 
+
+def run_day_7_demo(demo_data: dict | None = None) -> dict:
+    """Generate reports and charts for the full banking demo."""
+    source_data = demo_data or run_day_6_demo()
+    bank = source_data["bank"]
+    transactions = source_data["transactions"]
+    audit_log = source_data["audit_log"]
+    risk_analyzer = source_data["risk_analyzer"]
+    selected_client = source_data["clients"][0]
+
+    report_builder = ReportBuilder(
+        bank,
+        transactions=transactions,
+        audit_log=audit_log,
+        risk_analyzer=risk_analyzer,
+    )
+    output_dir = Path(tempfile.gettempdir()) / "bankapp_day7_reports"
+
+    client_report = report_builder.build_client_report(selected_client.client_id)
+    bank_report = report_builder.build_bank_report()
+    risk_report = report_builder.build_risk_report()
+
+    exported_files = {
+        "client_json": report_builder.export_to_json(
+            client_report,
+            output_dir / "client_report.json",
+        ),
+        "client_csv": report_builder.export_to_csv(
+            client_report,
+            output_dir / "client_report.csv",
+        ),
+        "client_text": report_builder.export_text_report(
+            client_report,
+            output_dir / "client_report.txt",
+        ),
+        "bank_json": report_builder.export_to_json(
+            bank_report,
+            output_dir / "bank_report.json",
+        ),
+        "bank_csv": report_builder.export_to_csv(
+            bank_report,
+            output_dir / "bank_report.csv",
+        ),
+        "risk_json": report_builder.export_to_json(
+            risk_report,
+            output_dir / "risk_report.json",
+        ),
+        "risk_csv": report_builder.export_to_csv(
+            risk_report,
+            output_dir / "risk_report.csv",
+        ),
+    }
+    chart_files = report_builder.save_charts(output_dir / "charts")
+
+    print("Day 7. Reporting and visualization:")
+    print(f"Reports directory: {output_dir}")
+    print("Client report preview:")
+    print(report_builder.build_text_report(client_report).splitlines()[:12])
+    print("Bank report transaction statistics:")
+    print(bank_report["transaction_statistics"])
+    print("Risk report summary:")
+    print(
+        {
+            "suspicious_operations": len(risk_report["suspicious_operations"]),
+            "client_profiles": len(risk_report["client_risk_profiles"]),
+            "errors": risk_report["error_statistics"]["total_errors"],
+        }
+    )
+    print("Exported files:")
+    print({name: str(path) for name, path in exported_files.items()})
+    print("Charts:")
+    print({name: str(path) for name, path in chart_files.items()})
+    print("-" * 80)
+
+    return {
+        "report_builder": report_builder,
+        "client_report": client_report,
+        "bank_report": bank_report,
+        "risk_report": risk_report,
+        "exported_files": exported_files,
+        "chart_files": chart_files,
+        "output_dir": output_dir,
+    }
+
 def main() -> None:
     """Run demonstration scenarios for implemented project days."""
     run_day_1_demo()
@@ -838,7 +923,8 @@ def main() -> None:
     run_day_3_demo()
     run_day_4_demo()
     run_day_5_demo()
-    run_day_6_demo()
+    day_6_data = run_day_6_demo()
+    run_day_7_demo(day_6_data)
 
 
 if __name__ == "__main__":
